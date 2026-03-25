@@ -2,55 +2,122 @@
 # https://github.com/Crosstalk-Solutions/project-nomad
 #
 # AI Integration note:
-#   NOMAD can reuse Zeus's existing Ollama + Qdrant instances instead of installing
-#   its own. During the NOMAD setup wizard (first-run), point the AI settings to:
+#   During the NOMAD setup wizard, point the AI settings to Zeus's existing stack
+#   (both are on the shared homelab-web network):
 #     Ollama:  http://zeus-ollama:11434
 #     Qdrant:  http://zeus-qdrant:6333
-#   Both containers are on the shared homelab-web network.
+
+name: project-nomad
 
 services:
-  project-nomad:
-    image: crosstalk/project-nomad:latest
-    container_name: project-nomad
+  admin:
+    image: ghcr.io/crosstalk-solutions/project-nomad:latest
+    pull_policy: always
+    container_name: nomad_admin
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8283:8080"
-    environment:
-      - DB_HOST=project-nomad-db
-      - DB_PORT=3306
-      - DB_NAME=nomad
-      - DB_USER=nomad
-      - DB_PASSWORD=${DB_PASSWORD}
-      - APP_URL=https://nomad.chrislawrence.ca
     volumes:
-      # Docker socket so NOMAD can manage sub-service containers
+      # Storage on hermes NAS (2.5TB free) — avoids filling /mnt/storage (107GB free)
+      - /mnt/hermes/appdata/project-nomad/storage:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent install/data dir
-      - ./data:/data
+      - nomad-update-shared:/app/update-shared
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - LOG_LEVEL=info
+      # APP_KEY must be at least 16 characters — use: openssl rand -hex 16
+      - APP_KEY=${APP_KEY}
+      - HOST=0.0.0.0
+      - URL=https://nomad.chrislawrence.ca
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=nomad
+      - DB_USER=nomad_user
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=nomad
+      - DB_SSL=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     depends_on:
-      project-nomad-db:
+      mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - web
 
-  project-nomad-db:
+  mysql:
     image: mysql:8.0
-    container_name: project-nomad-db
+    container_name: nomad_mysql
     restart: unless-stopped
     environment:
-      - MYSQL_DATABASE=nomad
-      - MYSQL_USER=nomad
-      - MYSQL_PASSWORD=${DB_PASSWORD}
       - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=nomad
+      - MYSQL_USER=nomad_user
+      - MYSQL_PASSWORD=${DB_PASSWORD}
     volumes:
-      - ./db:/var/lib/mysql
+      - ./mysql:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "--password=${DB_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - web
+
+  redis:
+    image: redis:7-alpine
+    container_name: nomad_redis
+    restart: unless-stopped
+    volumes:
+      - ./redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - web
+
+  updater:
+    # Sidecar that allows the admin container to self-update from within the UI
+    image: ghcr.io/crosstalk-solutions/project-nomad-sidecar-updater:latest
+    pull_policy: always
+    container_name: nomad_updater
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount this compose directory as /opt/project-nomad so updater can find compose.yaml
+      - ./:/opt/project-nomad
+      - nomad-update-shared:/shared
+    networks:
+      - web
+
+  disk-collector:
+    # Lightweight privileged sidecar that collects host disk usage for the UI
+    image: ghcr.io/crosstalk-solutions/project-nomad-disk-collector:latest
+    pull_policy: always
+    container_name: nomad_disk_collector
+    restart: unless-stopped
+    volumes:
+      - /:/host:ro,rslave
+      - /mnt/hermes/appdata/project-nomad/storage:/storage
+    networks:
+      - web
+
+  # Bundled Dozzle omitted — you already have dozzle at dozzle.chrislawrence.ca
+
+volumes:
+  nomad-update-shared:
+    driver: local
 
 networks:
   web:

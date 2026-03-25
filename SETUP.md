@@ -2,15 +2,31 @@
 
 ## 1. Pre-launch
 
-Edit `.env` and set real passwords before first start:
+Generate credentials and start:
 
 ```bash
 cd ~/apps/project-nomad
-nano .env          # set DB_PASSWORD and DB_ROOT_PASSWORD
+
+# Generate a random APP_KEY (must be >= 16 chars)
+openssl rand -hex 16
+
+# Edit .env and fill in APP_KEY, DB_PASSWORD, DB_ROOT_PASSWORD
+nano .env
+
 docker compose up -d
 ```
 
 Verify the Command Center is up at `http://192.168.50.128:8283`.
+
+Containers started by this stack:
+
+| Container            | Role                                      |
+|----------------------|-------------------------------------------|
+| `nomad_admin`        | Command Center UI (port 8283 → 8080)      |
+| `nomad_mysql`        | MySQL 8 database                          |
+| `nomad_redis`        | Redis session/cache store                 |
+| `nomad_updater`      | Self-update sidecar                       |
+| `nomad_disk_collector` | Host disk usage reporter for UI         |
 
 ---
 
@@ -139,7 +155,69 @@ docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 ---
 
-## 5. Port Reference
+## 5. Storage — Why Content Lives on Hermes
+
+| Mount | Total | Free | Role |
+|---|---|---|---|
+| `/mnt/storage` (sdb1) | 492GB | ~107GB | NOMAD app + compose files |
+| `/mnt/hermes/appdata` (NAS) | 3.4TB | 2.5TB | NOMAD content (ZIMs, maps, KB) |
+
+The `compose.yaml` mounts NOMAD's storage from hermes (`/mnt/hermes/appdata/project-nomad/storage:/app/storage`).
+This means all Kiwix ZIM files, maps, and uploads go to the NAS, not the local SSD.
+
+### Migrating existing storage to hermes (first-time setup)
+
+```bash
+# 1. Create target directory on hermes
+mkdir -p /mnt/hermes/appdata/project-nomad/storage
+
+# 2. Copy existing storage contents (logs, config, etc.)
+rsync -av /mnt/storage/apps/project-nomad/storage/ \
+          /mnt/hermes/appdata/project-nomad/storage/
+
+# 3. Stop NOMAD, apply new compose, restart
+cd ~/apps/project-nomad
+docker compose down
+docker compose up -d
+
+# 4. Verify containers are healthy
+docker ps --filter "name=nomad"
+```
+
+### Reusing existing Wikipedia ZIM (avoid 112GB re-download)
+
+You already have `wikipedia_en_all_maxi_2025-08.zim` (112GB) on hermes.
+Once NOMAD installs Kiwix and creates its ZIM directory, symlink it in instead of downloading again:
+
+```bash
+# After NOMAD's Kiwix has been installed via the wizard:
+ln -s /mnt/hermes/appdata/kiwix/zims/wikipedia_en_all_maxi_2025-08.zim \
+      /mnt/hermes/appdata/project-nomad/storage/zim/wikipedia_en_all_maxi_2025-08.zim
+
+# Then use NOMAD's ZIM library manager (Settings → Information Library)
+# to refresh/scan its ZIM directory — it should pick up the linked file.
+```
+
+You can do the same for any other ZIM files you want to reuse:
+```bash
+ln -s /mnt/hermes/appdata/kiwix/zims/ifixit_en_all_2025-12.zim \
+      /mnt/hermes/appdata/project-nomad/storage/zim/ifixit_en_all_2025-12.zim
+# etc.
+```
+
+### Kiwix ZIM cleanup on hermes
+
+These files on `/mnt/hermes/appdata/kiwix/zims/` are candidates for deletion:
+
+```bash
+# Zero-byte failed download — safe to delete
+rm /mnt/hermes/appdata/kiwix/zims/gutenberg_en_all_2025-11.zim
+
+# Nov 2023 StackOverflow — 75GB, 2+ years old (delete if you don't need the old snapshot)
+# rm /mnt/hermes/appdata/kiwix/zims/stackoverflow.com_en_all_2023-11.zim
+```
+
+## 6. Port Reference
 
 | Port (host) | Container port | Service                     |
 |-------------|---------------|-----------------------------|
