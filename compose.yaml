@@ -1,0 +1,58 @@
+# Project N.O.M.A.D. — Node for Offline Media, Archives, and Data
+# https://github.com/Crosstalk-Solutions/project-nomad
+#
+# AI Integration note:
+#   NOMAD can reuse Zeus's existing Ollama + Qdrant instances instead of installing
+#   its own. During the NOMAD setup wizard (first-run), point the AI settings to:
+#     Ollama:  http://zeus-ollama:11434
+#     Qdrant:  http://zeus-qdrant:6333
+#   Both containers are on the shared homelab-web network.
+
+services:
+  project-nomad:
+    image: crosstalk/project-nomad:latest
+    container_name: project-nomad
+    restart: unless-stopped
+    ports:
+      - "8283:8080"
+    environment:
+      - DB_HOST=project-nomad-db
+      - DB_PORT=3306
+      - DB_NAME=nomad
+      - DB_USER=nomad
+      - DB_PASSWORD=${DB_PASSWORD}
+      - APP_URL=https://nomad.chrislawrence.ca
+    volumes:
+      # Docker socket so NOMAD can manage sub-service containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent install/data dir
+      - ./data:/data
+    depends_on:
+      project-nomad-db:
+        condition: service_healthy
+    networks:
+      - web
+
+  project-nomad-db:
+    image: mysql:8.0
+    container_name: project-nomad-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_DATABASE=nomad
+      - MYSQL_USER=nomad
+      - MYSQL_PASSWORD=${DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+    volumes:
+      - ./db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "--password=${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
+    name: homelab-web
