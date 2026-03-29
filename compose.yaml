@@ -11,9 +11,10 @@ name: project-nomad
 
 services:
   admin:
-    image: ghcr.io/crosstalk-solutions/project-nomad:latest
-    pull_policy: always
+    image: project-nomad:local
     container_name: nomad_admin
+    # Reaps zombie PIDs so Docker can stop/replace the container (avoids "PID is zombie" on recreate)
+    init: true
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -22,12 +23,19 @@ services:
     volumes:
       # Storage on hermes NAS (2.5TB free) — avoids filling /mnt/storage (107GB free)
       - /mnt/hermes/appdata/project-nomad/storage:/app/storage
+      # Required so the symlink to the shared Kiwix ZIM directory resolves inside the container
+      - /mnt/hermes/appdata/kiwix/zims:/mnt/hermes/appdata/kiwix/zims:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - nomad-update-shared:/app/update-shared
     environment:
       - NODE_ENV=production
       - PORT=8080
       - LOG_LEVEL=info
+      # Host path for Docker volume binds when installing apps (Qdrant, Ollama, Flatnotes, …).
+      # Must match the host side of the /app/storage mount above.
+      - NOMAD_STORAGE_PATH=/mnt/hermes/appdata/project-nomad/storage
+      # Optional: if 8138 is taken on the host, pick a free port for Data Tools (CyberChef) when DB still maps legacy :8100.
+      # - NOMAD_CYBERCHEF_HOST_PORT=8140
       # APP_KEY must be at least 16 characters — use: openssl rand -hex 16
       - APP_KEY=${APP_KEY}
       - HOST=0.0.0.0
@@ -53,6 +61,10 @@ services:
       retries: 3
     networks:
       - web
+      # App containers installed from the UI join Docker network "project-nomad_default"
+      # (see admin/app/services/docker_service.ts). Attach admin here so Compose creates it;
+      # stacks that only use external "homelab-web" never get a default project network.
+      - nomad-app
 
   mysql:
     image: mysql:8.0
@@ -123,3 +135,6 @@ networks:
   web:
     external: true
     name: homelab-web
+  nomad-app:
+    name: project-nomad_default
+    driver: bridge
